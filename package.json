@@ -2,7 +2,7 @@
   "name": "firetail-mcp-server",
   "version": "1.0.0",
   "type": "module",
-  "description": "MCP Server for Firetail Resource Policy API (TypeScript)",
+  "description": "MCP Server for FireTail Resource Policy API (TypeScript)",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
