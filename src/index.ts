@@ -15,6 +15,8 @@ interface AlertConfig {
   minimumResources: 1;
 }
 
+type PlatformType = "api" | "ai";
+
 interface Filter {
   field: string;
   values?: string[];
@@ -40,7 +42,7 @@ interface ResourceFilter {
 interface CreateResourcePolicyPayload {
   name: string;
   description?: string;
-  platformType: "api" | "ai";
+  platformType: PlatformType;
   alertConfigs: AlertConfig[];
   savedFilterUUIDs: string[];
   filters: ResourceFilter[];
@@ -68,7 +70,7 @@ interface ResourcePolicy {
   filters: ResourceFilter[];
   premadeFilterUUIDs: string[];
   dateModifiedInMicroSeconds?: number;
-  platformType: "api" | "ai";
+  platformType: PlatformType;
   itemType: string;
   indexName: string;
   createdBy: string;
@@ -78,6 +80,9 @@ interface ResourcePolicy {
 const API_BASE_URL = process.env.FIRETAIL_API_URL || "";
 const CLIENT_ID = process.env.FIRETAIL_CLIENT_ID || "";
 const CLIENT_SECRET = process.env.FIRETAIL_CLIENT_SECRET || "";
+const DEFAULT_ORG_UUID = process.env.FIRETAIL_DEFAULT_ORG_UUID || "";
+const DEFAULT_PLATFORM_TYPE =
+  (process.env.FIRETAIL_DEFAULT_PLATFORM_TYPE as PlatformType) || "ai";
 
 // Token management
 let accessToken: string | null = null;
@@ -101,7 +106,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   const tools: Tool[] = [
     {
       name: "list_premade_filters",
-      description: "List all premade filters for an organisation",
+      description:
+        "List all premade filters (suggested policies) for an organisation",
       inputSchema: {
         type: "object",
         properties: {
@@ -115,7 +121,27 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             description: "Platform type (api or ai)",
           },
         },
-        required: ["org_uuid", "platform"],
+        required: [],
+      },
+    },
+    {
+      name: "list_existing_integrations_for_policy",
+      description:
+        "List all existing notification integrations for an organisation",
+      inputSchema: {
+        type: "object",
+        properties: {
+          org_uuid: {
+            type: "string",
+            description: "Organisation UUID",
+          },
+          query: {
+            type: "string",
+            description:
+              "Optional search query to filter existing integrations by name",
+          },
+        },
+        required: [],
       },
     },
     {
@@ -134,7 +160,30 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             description: "Platform type (api or ai)",
           },
         },
-        required: ["org_uuid", "platform"],
+        required: [],
+      },
+    },
+    {
+      name: "list_resource_policies",
+      description: "List all resource policies for an organisation",
+      inputSchema: {
+        type: "object",
+        properties: {
+          org_uuid: {
+            type: "string",
+            description: "Organisation UUID",
+          },
+          platform: {
+            type: "string",
+            enum: ["api", "ai"],
+            description: "Platform type (api or ai)",
+          },
+          query: {
+            type: "string",
+            description: "Optional search query to filter policies by name",
+          },
+        },
+        required: [],
       },
     },
     {
@@ -160,9 +209,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             enum: ["api", "ai"],
             description: "Platform type",
           },
-          alertConfigs: {
+          notificationUUIDs: {
             type: "array",
-            description: "Alert configurations",
+            description: "Notification integration UUIDs for alerts",
           },
           savedFilterUUIDs: {
             type: "array",
@@ -178,9 +227,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
         },
         required: [
-          "org_uuid",
           "name",
-          "platformType",
           "alertConfigs",
           "savedFilterUUIDs",
           "filters",
@@ -207,7 +254,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             description: "Load customizations (default: false)",
           },
         },
-        required: ["org_uuid", "resource_policy_uuid"],
+        required: ["resource_policy_uuid"],
       },
     },
     {
@@ -232,9 +279,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             type: "string",
             description: "Policy description (max 128 characters)",
           },
-          alertConfigs: {
+          notificationUUIDs: {
             type: "array",
-            description: "Alert configurations",
+            description: "Notification integration UUIDs for alerts",
           },
           savedFilterUUIDs: {
             type: "array",
@@ -249,7 +296,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             description: "Array of premade filter UUIDs",
           },
         },
-        required: ["org_uuid", "resource_policy_uuid"],
+        required: ["resource_policy_uuid"],
       },
     },
     {
@@ -267,7 +314,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             description: "Resource Policy UUID",
           },
         },
-        required: ["org_uuid", "resource_policy_uuid"],
+        required: ["resource_policy_uuid"],
       },
     },
   ];
@@ -296,13 +343,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "list_premade_filters":
         return await listPremadeFilters(
           args.org_uuid as string,
-          args.platform as "api" | "ai"
+          args.platform as PlatformType
+        );
+
+      case "list_existing_integrations_for_policy":
+        return await listExistingIntegrationsForPolicy(
+          args.org_uuid as string,
+          args.query as string | undefined
         );
 
       case "list_resource_items":
         return await listResourceItems(
           args.org_uuid as string,
-          args.platform as "api" | "ai"
+          args.platform as PlatformType
+        );
+
+      case "list_resource_policies":
+        return await listResourcePolicies(
+          args.org_uuid as string,
+          args.platform as PlatformType,
+          args.query as string | undefined
         );
 
       case "create_resource_policy":
@@ -425,7 +485,10 @@ async function makeAuthenticatedRequest(
   return response;
 }
 
-async function listPremadeFilters(orgUuid: string, platform: "api" | "ai") {
+async function listPremadeFilters(
+  orgUuid = DEFAULT_ORG_UUID,
+  platform = DEFAULT_PLATFORM_TYPE
+) {
   const url = `${API_BASE_URL}/organisations/${orgUuid}/resource-policies/filters?platform=${platform}`;
 
   const response = await makeAuthenticatedRequest(url, { method: "GET" });
@@ -447,7 +510,107 @@ async function listPremadeFilters(orgUuid: string, platform: "api" | "ai") {
   };
 }
 
-async function listResourceItems(orgUuid: string, platform: "api" | "ai") {
+async function listExistingIntegrationsForPolicy(
+  orgUuid = DEFAULT_ORG_UUID,
+  query?: string
+) {
+  const resource = "integration";
+  const url = `${API_BASE_URL}/organisations/${orgUuid}/search?resource=${resource}&pageSize=100`;
+
+  const payload = {
+    search_value: query || "",
+    filters: [
+      {
+        field: "integration_uuid",
+        values: [
+          "60b7faa9-dec6-4105-ae58-e6f528908559",
+          "60b7faa9-dec6-4105-ae58-e6f528901695",
+          "d0b7faa9-6ec6-41dd-ae58-e6f528908234",
+          "d0b7faa9-6ec6-41dd-ae58-e6f528908510",
+          "d0b7faa9-6ec6-4105-ae58-e6f528908510",
+          "60b7faa9-6ec6-4105-ae58-e6f528908146",
+          "44592ca4-c04f-4ef5-8607-de9c2695244c",
+          "4c9db41b-a30a-4b28-aa08-2f828f506026",
+          "3da10bb5-38d7-4da0-b257-b16f82f25606",
+          "38eef000-6e20-4621-a2bc-f1de29596cfc",
+        ],
+      },
+    ],
+    sort: { order: "desc" },
+    resource,
+  };
+
+  const response = await makeAuthenticatedRequest(url, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`HTTP ${response.status}: ${errorText}`);
+  }
+
+  const data = await response.json();
+
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(data, null, 2),
+      },
+    ],
+  };
+}
+
+async function listResourcePolicies(
+  orgUuid = DEFAULT_ORG_UUID,
+  platform = DEFAULT_PLATFORM_TYPE,
+  query?: string
+) {
+  const resource = "resource_policy";
+  const url = `${API_BASE_URL}/organisations/${orgUuid}/search?resource=${resource}&pageSize=100`;
+
+  const searchFilters = [
+    {
+      field: "platformType",
+      operator: "is-one-of",
+      values: [platform.toLowerCase()],
+    },
+  ];
+
+  const payload = {
+    filters: searchFilters,
+    search_value: query,
+    resource,
+    sort: { order: "desc" },
+  };
+
+  const response = await makeAuthenticatedRequest(url, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`HTTP ${response.status}: ${errorText}`);
+  }
+
+  const data = await response.json();
+
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(data, null, 2),
+      },
+    ],
+  };
+}
+
+async function listResourceItems(
+  orgUuid = DEFAULT_ORG_UUID,
+  platform = DEFAULT_PLATFORM_TYPE
+) {
   const url = `${API_BASE_URL}/organisations/${orgUuid}/resource-policies/resources?platform=${platform}`;
 
   const response = await makeAuthenticatedRequest(url, { method: "GET" });
@@ -469,47 +632,35 @@ async function listResourceItems(orgUuid: string, platform: "api" | "ai") {
   };
 }
 
-async function createResourcePolicy(args: {
+async function createResourcePolicy({
+  org_uuid = DEFAULT_ORG_UUID,
+  platformType = DEFAULT_PLATFORM_TYPE,
+  ...args
+}: {
   org_uuid: string;
   name: string;
   description?: string;
-  platformType: "api" | "ai";
-  alertConfigs: string[];
+  platformType: PlatformType;
+  notificationUUIDs: string[];
   savedFilterUUIDs: string[];
   filters: ResourceFilter[];
   premadeFilterUUIDs: string[];
 }) {
-  const url = `${API_BASE_URL}/organisations/${args.org_uuid}/resource-policies`;
+  const url = `${API_BASE_URL}/organisations/${org_uuid}/resource-policies`;
 
   const payload: CreateResourcePolicyPayload = {
     name: args.name,
-    platformType: args.platformType,
+    platformType: platformType,
     alertConfigs: [
       {
         UUID: crypto.randomUUID(),
-        notificationIntegrations: args.alertConfigs.map((uuid) => uuid),
+        notificationIntegrations: args.notificationUUIDs.map((uuid) => uuid),
         minimumResources: 1,
       },
     ],
     savedFilterUUIDs: args.savedFilterUUIDs,
     filters: args.filters,
     premadeFilterUUIDs: args.premadeFilterUUIDs,
-  };
-
-  const x = {
-    savedFilterUUIDs: [],
-    premadeFilterUUIDs: ["b1c2d3e4-f5a6-4890-abcd-ef1234567890"],
-    platformType: "ai",
-    name: "testing",
-    description: "descrption",
-    filters: [],
-    alertConfigs: [
-      {
-        notificationIntegrations: ["b4c58102-290c-447d-9ee5-19be0a9cff01"],
-        UUID: "a0630cbd-290c-4aa1-9eb4-c5593754ec59",
-        minimumResources: 1,
-      },
-    ],
   };
 
   if (args.description) {
@@ -543,7 +694,7 @@ async function createResourcePolicy(args: {
 }
 
 async function getResourcePolicy(
-  orgUuid: string,
+  orgUuid = DEFAULT_ORG_UUID,
   resourcePolicyUuid: string,
   loadCustomizations: boolean = false
 ) {
@@ -568,24 +719,34 @@ async function getResourcePolicy(
   };
 }
 
-async function updateResourcePolicy(args: {
+async function updateResourcePolicy({
+  org_uuid = DEFAULT_ORG_UUID,
+  ...args
+}: {
   org_uuid: string;
   resource_policy_uuid: string;
   name?: string;
   description?: string;
-  alertConfigs?: AlertConfig[];
+  notificationUUIDs?: string[];
   savedFilterUUIDs?: string[];
   filters?: ResourceFilter[];
   premadeFilterUUIDs?: string[];
 }) {
-  const url = `${API_BASE_URL}/organisations/${args.org_uuid}/resource-policies/${args.resource_policy_uuid}`;
+  const url = `${API_BASE_URL}/organisations/${org_uuid}/resource-policies/${args.resource_policy_uuid}`;
 
   const payload: UpdateResourcePolicyPayload = {};
 
   // Only include fields that were provided
   if (args.name) payload.name = args.name;
   if (args.description) payload.description = args.description;
-  if (args.alertConfigs) payload.alertConfigs = args.alertConfigs;
+  if (args.notificationUUIDs)
+    payload.alertConfigs = [
+      {
+        UUID: crypto.randomUUID(),
+        notificationIntegrations: args.notificationUUIDs.map((uuid) => uuid),
+        minimumResources: 1,
+      },
+    ];
   if (args.savedFilterUUIDs) payload.savedFilterUUIDs = args.savedFilterUUIDs;
   if (args.filters) payload.filters = args.filters;
   if (args.premadeFilterUUIDs)
@@ -618,7 +779,7 @@ async function updateResourcePolicy(args: {
 }
 
 async function deleteResourcePolicy(
-  orgUuid: string,
+  orgUuid = DEFAULT_ORG_UUID,
   resourcePolicyUuid: string
 ) {
   const url = `${API_BASE_URL}/organisations/${orgUuid}/resource-policies/${resourcePolicyUuid}`;
