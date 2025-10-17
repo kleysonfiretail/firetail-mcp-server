@@ -4,6 +4,10 @@
   "type": "module",
   "description": "MCP Server for FireTail Resource Policy API (TypeScript)",
   "main": "dist/index.js",
+  "author": {
+    "name": "Kleyson Morais",
+    "email": "kleyson@firetail.io"
+  },
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
